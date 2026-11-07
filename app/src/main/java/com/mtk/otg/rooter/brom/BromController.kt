@@ -26,12 +26,14 @@ class BromController(
 
     suspend fun loadAndRunDA(): Result<Unit> = withContext(Dispatchers.IO) {
         try {
-            if (!setupUsb()) throw IOException("שגיאה: לא נמצא ממשק USB מתאים ל-BROM (בדוק לוגים)")
+            if (!setupUsb()) throw IOException("שגיאה: לא נמצא ממשק USB מתאים ל-BROM")
             if (!handshake()) throw IOException("שגיאה: ה-Handshake נכשל. המכשיר לא במצב BROM.")
             
             val daBytes = readDaFromAssets("DA_MT6765.bin")
             
-            if (!sendDa(daBytes)) throw IOException("שגיאה: שליחת ה-DA נכשלה.")
+            // שליחת ה-DA עם בדיקות שגיאה מפורטות
+            sendDa(daBytes)
+            
             if (!jumpDa()) throw IOException("שגיאה: הפעלת ה-DA (Jump) נכשלה.")
 
             Result.success(Unit)
@@ -42,13 +44,10 @@ class BromController(
 
     private fun setupUsb(): Boolean {
         if (device.interfaceCount == 0) return false
-        
-        // סורקים את כל הממשקים כדי למצוא אחד עם Endpoints של Bulk
         for (i in 0 until device.interfaceCount) {
             val intf = device.getInterface(i)
             var inEp: UsbEndpoint? = null
             var outEp: UsbEndpoint? = null
-            
             for (j in 0 until intf.endpointCount) {
                 val ep = intf.getEndpoint(j)
                 if (ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK) {
@@ -56,7 +55,6 @@ class BromController(
                     else outEp = ep
                 }
             }
-            
             if (inEp != null && outEp != null) {
                 usbInterface = intf
                 endpointIn = inEp
@@ -64,11 +62,7 @@ class BromController(
                 break
             }
         }
-        
-        if (endpointIn == null || endpointOut == null) {
-            return false
-        }
-
+        if (endpointIn == null || endpointOut == null) return false
         connection = usbManager.openDevice(device) ?: return false
         return connection!!.claimInterface(usbInterface, true)
     }
@@ -80,13 +74,10 @@ class BromController(
 
         val buf = byteArrayOf(BromProtocol.HANDSHAKE_BYTE.toByte())
         val sent = conn.bulkTransfer(epOut, buf, 1, 1000)
-        
         if (sent != 1) return false
 
-        // מחכים לתגובה (בדרך כלל 0x5A)
         val response = ByteArray(1)
         conn.bulkTransfer(epIn, response, 1, 1000)
-        
         return true 
     }
 
@@ -94,10 +85,11 @@ class BromController(
         return context.assets.open(fileName).use { it.readBytes() }
     }
 
-    private fun sendDa(daData: ByteArray): Boolean {
-        val conn = connection ?: return false
-        val epOut = endpointOut ?: return false
-        val epIn = endpointIn ?: return false
+    // פונקציה חדשה שזורקת שגיאות מפורטות
+    private fun sendDa(daData: ByteArray) {
+        val conn = connection ?: throw IOException("אין חיבור USB")
+        val epOut = endpointOut ?: throw IOException("אין Endpoint של OUT")
+        val epIn = endpointIn ?: throw IOException("אין Endpoint של IN")
 
         val length = daData.size
 
@@ -107,11 +99,17 @@ class BromController(
         header.putInt(length)
 
         val headerBytes = header.array()
-        var sent = conn.bulkTransfer(epOut, headerBytes, headerBytes.size, 3000)
-        if (sent != headerBytes.size) return false
+        val headerSent = conn.bulkTransfer(epOut, headerBytes, headerBytes.size, 3000)
+        
+        if (headerSent != headerBytes.size) {
+            throw IOException("שליחת כותרת נכשלה (קוד: $headerSent)")
+        }
 
         val status = ByteArray(1)
-        conn.bulkTransfer(epIn, status, 1, 1000)
+        val statusRead = conn.bulkTransfer(epIn, status, 1, 1000)
+        if (statusRead > 0 && status[0] != 0xC0.toByte()) {
+            throw IOException("תגובת מכשיר שגויה לכותרת: ${status[0]}")
+        }
         
         var offset = 0
         val chunkSize = 4096
@@ -119,14 +117,17 @@ class BromController(
             val chunkLength = minOf(chunkSize, length - offset)
             val chunk = daData.copyOfRange(offset, offset + chunkLength)
             
-            sent = conn.bulkTransfer(epOut, chunk, chunkLength, 3000)
-            if (sent < 0) return false
-            
+            val sent = conn.bulkTransfer(epOut, chunk, chunkLength, 3000)
+            if (sent < 0) {
+                throw IOException("שליחת נתונים נכשלה במיקום $offset (קוד: $sent). המכשיר ניתק.")
+            }
             offset += sent
         }
 
-        conn.bulkTransfer(epIn, status, 1, 3000)
-        return true
+        val finalStatusRead = conn.bulkTransfer(epIn, status, 1, 3000)
+        if (finalStatusRead > 0 && status[0] != 0x5A.toByte()) {
+            throw IOException("המכשיר דחה את ה-DA. סטטוס: ${status[0]}. ייתכן שה-Bootloader מאובטח (SLA/DAA).")
+        }
     }
 
     private fun jumpDa(): Boolean {
