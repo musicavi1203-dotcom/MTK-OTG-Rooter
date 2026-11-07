@@ -31,6 +31,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         usbManager = UsbConnectionManager(this)
+        // תיקון: רושמים את המקלט מיד עם יצירת ה-Activity
+        usbManager.register()
         
         setContent {
             MTKOTGRooterTheme {
@@ -44,13 +46,9 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    override fun onResume() {
-        super.onResume()
-        usbManager.register()
-    }
-
-    override fun onPause() {
-        super.onPause()
+    // תיקון: מסירים רק כשהאפליקציה נסגרת לגמרי
+    override fun onDestroy() {
+        super.onDestroy()
         usbManager.unregister()
     }
 }
