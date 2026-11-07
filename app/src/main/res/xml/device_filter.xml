@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- פילטר ספציפי למכשירי MTK במצב BROM (VID: 0x0E8D, PID: 0x0003) -->
+    <usb-device vendor-id="3725" product-id="3" />
+    <!-- פילטר ל-Preloader (למקרה הצורך) -->
+    <usb-device vendor-id="3725" product-id="8192" />
+</resources>
