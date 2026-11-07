@@ -44,29 +44,24 @@ class RootProcessManager(
         _state.value = RootState.ADB_CONNECTING
         addLog("מתחבר ל-ADB...")
         
-        adbController = AdbController(usbManager, device)
-        
-        // מקשיבים למצב האמיתי של החיבור ל-ADB
         scope.launch {
-            adbController?.connectionState?.collect { status ->
-                addLog("ADB Status: $status")
-                
-                when {
-                    status.contains("מחובר ומאומת") -> {
-                        _state.value = RootState.ADB_READY
-                        addLog("החיבור ל-ADB הושלם בהצלחה. מוכן לשלב הבא.")
-                    }
-                    status.contains("שגיאה") -> {
-                        _state.value = RootState.ERROR
-                    }
-                }
+            adbController = AdbController(usbManager, device)
+            
+            // הפונקציה connect() מחזירה Result
+            val result = adbController?.connect()
+            
+            if (result?.isSuccess == true) {
+                _state.value = RootState.ADB_READY
+                addLog("החיבור ל-ADB הושלם בהצלחה. מוכן לשלב הבא.")
+            } else {
+                val errorMsg = result?.exceptionOrNull()?.message ?: "שגיאה לא ידועה בחיבור"
+                _state.value = RootState.ERROR
+                addLog("שגיאה בחיבור ל-ADB: $errorMsg")
             }
         }
-        
-        adbController?.connect(scope)
     }
 
-    fun rebootToFastboot() {
+    fun rebootToFastboot(scope: CoroutineScope) {
         if (adbController == null) {
             addLog("שגיאה: אין חיבור ADB")
             _state.value = RootState.ERROR
@@ -76,10 +71,15 @@ class RootProcessManager(
         _state.value = RootState.REBOOTING_TO_FASTBOOT
         addLog("שולח פקודת reboot bootloader...")
         
-        adbController?.executeShellCommand("reboot bootloader")
-        
-        _state.value = RootState.WAITING_FOR_FASTBOOT
-        addLog("ממתין שהמכשיר יעלה מחדש במצב Fastboot... אנא המתן.")
+        scope.launch {
+            // המכשיר הולך להתנתק, לכן אנחנו מתעלמים משגיאות שליחת הפקודה
+            adbController?.executeShellCommand("reboot bootloader")
+            adbController?.disconnect()
+            adbController = null
+            
+            _state.value = RootState.WAITING_FOR_FASTBOOT
+            addLog("המכשיר מאתחל... אנא המתן לחיבור מחדש במצב Fastboot.")
+        }
     }
 
     fun connectFastboot(device: UsbDevice) {
@@ -87,7 +87,6 @@ class RootProcessManager(
         fastbootController = FastbootController(usbManager, device)
         fastbootController?.connect()
         
-        // בדיקה אם החיבור הצליח (לפי ה-State של ה-Controller)
         if (fastbootController?.state?.value?.contains("מחובר") == true) {
             _state.value = RootState.FASTBOOT_CONNECTED
             addLog("Fastboot מחובר ומוכן לצריבה.")
@@ -112,7 +111,6 @@ class RootProcessManager(
             addLog("תגובת download: $downloadResponse")
 
             if (downloadResponse?.startsWith("DATA") == true) {
-                // (בהמשך נחבר את שליחת הנתונים האמיתית כאן)
                 addLog("המכשיר מוכן לקבלת הנתונים. (פונקציית צריבה אמיתית תתווסף בהמשך)")
                 _state.value = RootState.ERROR 
             } else {
