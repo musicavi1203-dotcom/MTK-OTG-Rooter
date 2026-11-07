@@ -9,7 +9,7 @@ android {
 
     defaultConfig {
         applicationId = "com.mtk.otg.rooter"
-        minSdk = 29 // הורדתי מ-33 כדי לתמוך ביותר מכשירי MTK (Android 10+)
+        minSdk = 29
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
@@ -60,6 +60,7 @@ dependencies {
     // Android Core & Lifecycle
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.3")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.3") // <-- הספרייה שהייתה חסרה
     implementation("androidx.activity:activity-compose:1.9.0")
     
     // Coroutines (קריטי לעבודה אסינכרונית עם USB)
