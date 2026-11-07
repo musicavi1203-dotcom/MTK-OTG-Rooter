@@ -24,22 +24,14 @@ class BromController(
     private var endpointOut: UsbEndpoint? = null
     private var usbInterface: UsbInterface? = null
 
-    // פונקציה ראשית שמבצעת את כל תהליך ה-Handshake ושליחת ה-DA
     suspend fun loadAndRunDA(): Result<Unit> = withContext(Dispatchers.IO) {
         try {
-            // 1. מציאת הממשק וה-Endpoints
-            if (!setupUsb()) throw IOException("שגיאה: לא נמצא ממשק USB מתאים ל-BROM")
-
-            // 2. לחיצת יד (Handshake)
-            if (!handshake()) throw IOException("שגיאה: ה-Handshake נכשל. המכשיר לא במצב BROM או שהפרוטוקול שונה.")
-
-            // 3. קריאת קובץ ה-DA מתיקיית ה-Assets
+            if (!setupUsb()) throw IOException("שגיאה: לא נמצא ממשק USB מתאים ל-BROM (בדוק לוגים)")
+            if (!handshake()) throw IOException("שגיאה: ה-Handshake נכשל. המכשיר לא במצב BROM.")
+            
             val daBytes = readDaFromAssets("DA_MT6765.bin")
-
-            // 4. שליחת פקודת SEND_DA ושליחת הנתונים
+            
             if (!sendDa(daBytes)) throw IOException("שגיאה: שליחת ה-DA נכשלה.")
-
-            // 5. שליחת פקודת JUMP_DA כדי להריץ את ה-DA
             if (!jumpDa()) throw IOException("שגיאה: הפעלת ה-DA (Jump) נכשלה.")
 
             Result.success(Unit)
@@ -49,38 +41,52 @@ class BromController(
     }
 
     private fun setupUsb(): Boolean {
-        // במצב BROM, לרוב הממשק הראשון מכיל את ה-Endpoints
         if (device.interfaceCount == 0) return false
         
-        usbInterface = device.getInterface(0)
-        
-        for (i in 0 until usbInterface!!.endpointCount) {
-            val ep = usbInterface!!.getEndpoint(i)
-            if (ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK) {
-                if (ep.direction == UsbConstants.USB_DIR_IN) endpointIn = ep
-                else endpointOut = ep
+        // סורקים את כל הממשקים כדי למצוא אחד עם Endpoints של Bulk
+        for (i in 0 until device.interfaceCount) {
+            val intf = device.getInterface(i)
+            var inEp: UsbEndpoint? = null
+            var outEp: UsbEndpoint? = null
+            
+            for (j in 0 until intf.endpointCount) {
+                val ep = intf.getEndpoint(j)
+                if (ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK) {
+                    if (ep.direction == UsbConstants.USB_DIR_IN) inEp = ep
+                    else outEp = ep
+                }
+            }
+            
+            if (inEp != null && outEp != null) {
+                usbInterface = intf
+                endpointIn = inEp
+                endpointOut = outEp
+                break
             }
         }
-
-        if (endpointIn == null || endpointOut == null) return false
+        
+        if (endpointIn == null || endpointOut == null) {
+            return false
+        }
 
         connection = usbManager.openDevice(device) ?: return false
         return connection!!.claimInterface(usbInterface, true)
     }
 
     private fun handshake(): Boolean {
-        // שליחת בייט ה-Handshake (0xA0)
+        val conn = connection ?: return false
+        val epOut = endpointOut ?: return false
+        val epIn = endpointIn ?: return false
+
         val buf = byteArrayOf(BromProtocol.HANDSHAKE_BYTE.toByte())
-        val sent = connection?.bulkTransfer(endpointOut, buf, 1, 2000)
+        val sent = conn.bulkTransfer(epOut, buf, 1, 1000)
         
         if (sent != 1) return false
 
-        // מחכים לתגובה (בדרך כלל 0x5A, אבל לפעמים לא חוזר כלום)
+        // מחכים לתגובה (בדרך כלל 0x5A)
         val response = ByteArray(1)
-        val read = connection?.bulkTransfer(endpointIn, response, 1, 2000)
+        conn.bulkTransfer(epIn, response, 1, 1000)
         
-        // אם הצלחנו לקרוא את ה-Echo, נבדוק שהוא שווה ל-0x5A (אופציונלי, תלוי בשבב)
-        // אם לא קראנו כלום, נמשיך הלאה ונראה אם השבב מגיב לפקודה הבאה
         return true 
     }
 
@@ -95,38 +101,31 @@ class BromController(
 
         val length = daData.size
 
-        // הכנת ה-Header של SEND_DA
-        // [0xD7][Length (4 Bytes LE)][Length (4 Bytes LE)]
         val header = ByteBuffer.allocate(9).order(ByteOrder.LITTLE_ENDIAN)
         header.put(BromProtocol.CMD_SEND_DA.toByte())
         header.putInt(length)
         header.putInt(length)
 
-        // שליחת ה-Header
         val headerBytes = header.array()
-        var sent = conn.bulkTransfer(epOut, headerBytes, headerBytes.size, 5000)
+        var sent = conn.bulkTransfer(epOut, headerBytes, headerBytes.size, 3000)
         if (sent != headerBytes.size) return false
 
-        // המתנה לתגובת 0xC0 (אופציונלי, תלוי בשבב, לפעמים השבב ממשיך מיד)
         val status = ByteArray(1)
-        conn.bulkTransfer(epIn, status, 1, 2000)
+        conn.bulkTransfer(epIn, status, 1, 1000)
         
-        // שליחת הנתונים עצמם בצ'אנקים של 4KB
         var offset = 0
         val chunkSize = 4096
         while (offset < length) {
             val chunkLength = minOf(chunkSize, length - offset)
             val chunk = daData.copyOfRange(offset, offset + chunkLength)
             
-            sent = conn.bulkTransfer(epOut, chunk, chunkLength, 5000)
+            sent = conn.bulkTransfer(epOut, chunk, chunkLength, 3000)
             if (sent < 0) return false
             
             offset += sent
         }
 
-        // קריאת סטטוס סופי (אמור להיות 0x5A)
-        conn.bulkTransfer(epIn, status, 1, 5000)
-        
+        conn.bulkTransfer(epIn, status, 1, 3000)
         return true
     }
 
@@ -134,8 +133,6 @@ class BromController(
         val conn = connection ?: return false
         val epOut = endpointOut ?: return false
         
-        // הכנת פקודת JUMP_DA
-        // [0xD5][Address (4 Bytes LE)]
         val buffer = ByteBuffer.allocate(5).order(ByteOrder.LITTLE_ENDIAN)
         buffer.put(BromProtocol.CMD_JUMP_DA.toByte())
         buffer.putInt(BromProtocol.DA_LOAD_ADDRESS)
