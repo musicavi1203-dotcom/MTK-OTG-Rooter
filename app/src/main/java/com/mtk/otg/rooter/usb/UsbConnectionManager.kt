@@ -17,7 +17,8 @@ class UsbConnectionManager(private val context: Context) {
 
     private val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
 
-    private val _usbEvents = MutableSharedFlow<UsbEvent>()
+    // התיקון: הוספנו extraBufferCapacity כדי שאירועים לא יאבדו אם ה-UI עסוק
+    private val _usbEvents = MutableSharedFlow<UsbEvent>(extraBufferCapacity = 1)
     val usbEvents: SharedFlow<UsbEvent> = _usbEvents.asSharedFlow()
 
     companion object {
@@ -68,7 +69,6 @@ class UsbConnectionManager(private val context: Context) {
             addAction(ACTION_USB_PERMISSION)
         }
         
-        // התיקון כאן: שינינו ל-RECEIVER_EXPORTED כדי שמערכת אנדרואיד תוכל להעביר לנו את אישור ההרשאה
         ContextCompat.registerReceiver(
             context,
             usbReceiver,
