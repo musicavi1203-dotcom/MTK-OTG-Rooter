@@ -2,7 +2,6 @@ package com.mtk.otg.rooter.viewmodel
 
 import android.app.Application
 import android.hardware.usb.UsbDevice
-import android.hardware.usb.UsbManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.mtk.otg.rooter.manager.RootProcessManager
@@ -12,7 +11,6 @@ import kotlinx.coroutines.flow.StateFlow
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     
-    // שינינו את האתחול כך שיעביר את ה-Application (Context) למנהל התהליכים
     private val processManager = RootProcessManager(application)
 
     init {
@@ -34,7 +32,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         processManager.connectFastboot(device)
     }
 
-    // הפונקציה החדשה שמפעילה את ה-BROM
+    // הפונקציה החדשה למעבר ל-BROM
+    fun rebootToBrom() {
+        processManager.rebootToBrom(viewModelScope)
+    }
+
     fun loadBromDa(device: UsbDevice) {
         processManager.loadBromDa(device, viewModelScope)
     }
