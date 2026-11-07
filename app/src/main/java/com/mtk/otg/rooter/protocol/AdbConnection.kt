@@ -20,20 +20,18 @@ class AdbConnection(
     private val _incomingMessages = MutableSharedFlow<AdbMessage>()
     val incomingMessages: SharedFlow<AdbMessage> = _incomingMessages.asSharedFlow()
 
-    // הוספנו ערוץ לוגים פנימי כדי שנוכל לראות שגיאות USB
     private val _logMessages = MutableSharedFlow<String>()
     val logMessages: SharedFlow<String> = _logMessages.asSharedFlow()
 
     companion object {
         private const val A_VERSION = 0x01000000
-        private const val MAX_PAYLOAD = 256 * 1024 // 256KB - יותר סטנדרטי
+        private const val MAX_PAYLOAD = 256 * 1024 // 256KB
         private const val TIMEOUT_MS = 3000
     }
 
     fun connect(scope: CoroutineScope) {
         if (isConnected) return
 
-        // תיקון: מחרוזת פשוטה יותר ש-MTK אוהב
         val cnxnMessage = AdbMessage(
             command = AdbProtocol.A_CNXN,
             arg0 = A_VERSION,
@@ -83,12 +81,13 @@ class AdbConnection(
         while (offset < bytes.size) {
             if (bytes.size - offset < AdbProtocol.HEADER_SIZE) break
             
-            val buffer = ByteBuffer.wrap(bytes, offset, AdbProtocol.HEADER_SIZE)
+            // התיקון הקריטי: שימוש במיקום אבסולוטי (offset + 12) כדי לקרוא נכון את גודל החבילה
+            val buffer = ByteBuffer.wrap(bytes)
             buffer.order(ByteOrder.LITTLE_ENDIAN)
-            buffer.position(12)
+            buffer.position(offset + 12)
             val dataLength = buffer.int
             
-            // הגנה מפני מידע שגוי שיכול לקרוס את האפליקציה
+            // הגנה מפני מידע פגום
             if (dataLength < 0 || dataLength > 16384) {
                 _logMessages.tryEmit("אורך נתונים לא תקין: $dataLength")
                 break
@@ -110,21 +109,11 @@ class AdbConnection(
 
     private fun handleMessage(message: AdbMessage) {
         when (message.command) {
-            AdbProtocol.A_CNXN -> {
-                _incomingMessages.tryEmit(message)
-            }
-            AdbProtocol.A_AUTH -> {
-                _incomingMessages.tryEmit(message)
-            }
-            AdbProtocol.A_OKAY -> {
-                _incomingMessages.tryEmit(message)
-            }
-            AdbProtocol.A_WRTE -> {
-                _incomingMessages.tryEmit(message)
-            }
-            AdbProtocol.A_CLSE -> {
-                _incomingMessages.tryEmit(message)
-            }
+            AdbProtocol.A_CNXN -> _incomingMessages.tryEmit(message)
+            AdbProtocol.A_AUTH -> _incomingMessages.tryEmit(message)
+            AdbProtocol.A_OKAY -> _incomingMessages.tryEmit(message)
+            AdbProtocol.A_WRTE -> _incomingMessages.tryEmit(message)
+            AdbProtocol.A_CLSE -> _incomingMessages.tryEmit(message)
         }
     }
 
