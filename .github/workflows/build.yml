@@ -1,11 +1,9 @@
 name: Build Android APK
 
 on:
-  push:
-    branches: [ "main", "master" ]
-  pull_request:
-    branches: [ "main", "master" ]
-  workflow_dispatch: # מאפשר הפעלה ידנית מהכפתור ב-GitHub
+  push: # ירוץ על כל פוש, בכל ענף
+  pull_request: # ירוץ על כל עדכון ב-PR
+  workflow_dispatch: # מאפשר הפעלה ידנית
 
 jobs:
   build:
@@ -20,19 +18,17 @@ jobs:
       with:
         java-version: '17'
         distribution: 'temurin'
-        cache: gradle
 
     - name: Setup Android SDK
       uses: android-actions/setup-android@v3
 
     - name: Setup Gradle
       uses: gradle/actions/setup-gradle@v4
-
-    - name: Grant execute permission for gradlew
-      run: chmod +x gradlew
+      with:
+        gradle-version: '8.7'
 
     - name: Build Debug APK
-      run: ./gradlew assembleDebug --stacktrace
+      run: gradle assembleDebug --stacktrace
 
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
