@@ -1,76 +1,87 @@
 package com.mtk.otg.rooter.protocol
 
+import android.content.Context
 import android.util.Base64
 import java.math.BigInteger
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.security.KeyPair
+import java.security.KeyFactory
 import java.security.KeyPairGenerator
-import java.security.Signature
+import java.security.PrivateKey
+import java.security.PublicKey
 import java.security.interfaces.RSAPublicKey
+import java.security.spec.PKCS8EncodedKeySpec
+import java.security.spec.X509EncodedKeySpec
+import javax.crypto.Cipher
 
 object AdbCrypto {
+    private var privateKey: PrivateKey? = null
+    private var publicKey: PublicKey? = null
+    private var isInitialized = false
 
-    // יצירת זוג מפתחות RSA (2048 ביט - חובה ל-ADB מודרני)
-    fun generateKeyPair(): KeyPair {
-        val keyGen = KeyPairGenerator.getInstance("RSA")
-        keyGen.initialize(2048)
-        return keyGen.generateKeyPair()
-    }
+    // DigestInfo של SHA-1 - חובה כדי לחתום נכון על הטוקן של ADB
+    private val SHA1_DIGEST_INFO = byteArrayOf(
+        0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14
+    )
 
-    // חתימה על האתגר (Token) ששלח המכשיר
-    fun signToken(token: ByteArray, keyPair: KeyPair): ByteArray {
-        val signature = Signature.getInstance("SHA1withRSA") // ADB משתמש ב-SHA1
-        signature.initSign(keyPair.private)
-        signature.update(token)
-        return signature.sign()
-    }
-
-    // הפיכת המפתח הציבורי לפורמט ADB (Base64 של בלוב בינארי)
-    fun encodePublicKey(publicKey: RSAPublicKey, username: String = "mtk-otg-rooter@android"): String {
-        val modulus = publicKey.modulus
-        val exponent = publicKey.publicExponent
+    // טוען את המפתחות מהאחסון, או מייצר חדשים אם אין (פעם אחת)
+    fun init(context: Context) {
+        if (isInitialized) return
+        val prefs = context.getSharedPreferences("adb_keys", Context.MODE_PRIVATE)
+        val kf = KeyFactory.getInstance("RSA")
+        val savedPriv = prefs.getString("priv", null)
+        val savedPub = prefs.getString("pub", null)
         
-        // ADB דורש גודל מודולוס של 256 בתים (2048 ביט)
-        val n = toLittleEndian(modulus, 256)
-        
-        // חישוב n0inv (ההופכי המודולרי של 32 הביטים התחתונים של n)
-        val n0 = modulus.and(BigInteger("FFFFFFFF", 16)).toLong()
-        val n0inv = BigInteger.valueOf(n0).modInverse(BigInteger("100000000", 16)).toLong()
-
-        // חישוב rr (R^2 mod n, כש-R הוא 2^2048)
-        val r = BigInteger.ONE.shiftLeft(2048)
-        val rr = r.multiply(r).mod(modulus)
-        val rrBytes = toLittleEndian(rr, 256)
-
-        // הרכבת הבלוב הבינארי שהמכשיר מצפה לו
-        val buffer = ByteBuffer.allocate(4 + 4 + 256 + 256 + 4 + username.length + 1)
-        buffer.order(ByteOrder.LITTLE_ENDIAN)
-
-        buffer.putInt(2048) // אורך המפתח בביטים
-        buffer.putInt(n0inv.toInt()) // n0inv
-        buffer.put(n) // n (modulus)
-        buffer.put(rrBytes) // rr
-        buffer.putInt(65537) // מעריך (Exponent) - תמיד 65537
-        buffer.put(username.toByteArray())
-        buffer.put(0) // תו Null בסוף
-
-        return Base64.encodeToString(buffer.array(), Base64.NO_WRAP)
-    }
-
-    // פונקציית עזר להמרת BigInteger למערך בתים ב-Little-Endian בגודל קבוע
-    private fun toLittleEndian(value: BigInteger, length: Int): ByteArray {
-        val bytes = value.toByteArray()
-        val result = ByteArray(length)
-        
-        // BigInteger מוסיף לפעמים בייט 0 בהתחלה אם המספר חיובי, צריך לטפל בזה
-        val startIndex = if (bytes.size > length) bytes.size - length else 0
-        val actualLength = bytes.size - startIndex
-        
-        // העתקה והיפוך (כי BigInteger הוא Big-Endian ו-ADB רוצה Little-Endian)
-        for (i in 0 until actualLength) {
-            result[i] = bytes[bytes.size - 1 - i]
+        if (savedPriv != null && savedPub != null) {
+            privateKey = kf.generatePrivate(PKCS8EncodedKeySpec(Base64.decode(savedPriv, Base64.NO_WRAP)))
+            publicKey = kf.generatePublic(X509EncodedKeySpec(Base64.decode(savedPub, Base64.NO_WRAP)))
+        } else {
+            val gen = KeyPairGenerator.getInstance("RSA")
+            gen.initialize(2048)
+            val pair = gen.generateKeyPair()
+            privateKey = pair.private
+            publicKey = pair.public
+            prefs.edit()
+                .putString("priv", Base64.encodeToString(pair.private.encoded, Base64.NO_WRAP))
+                .putString("pub", Base64.encodeToString(pair.public.encoded, Base64.NO_WRAP))
+                .apply()
         }
-        return result
+        isInitialized = true
+    }
+
+    // חתימה על האתגר (הטוקן)
+    fun signToken(token: ByteArray): ByteArray {
+        val priv = privateKey ?: throw IllegalStateException("AdbCrypto not initialized")
+        val cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding")
+        cipher.init(Cipher.ENCRYPT_MODE, priv)
+        return cipher.doFinal(SHA1_DIGEST_INFO + token)
+    }
+
+    // המרת המפתח הציבורי לפורמט ש-ADB מצפה לו
+    fun encodePublicKeyAdb(): ByteArray {
+        val pub = publicKey as? RSAPublicKey ?: throw IllegalStateException("AdbCrypto not initialized")
+        val n = pub.modulus
+        val r32 = BigInteger.ONE.shiftLeft(32)
+        val n0inv = r32.subtract(n.mod(r32).modInverse(r32)).toLong().toInt()
+        val rr = BigInteger.ONE.shiftLeft(4096).mod(n)
+
+        val buf = ByteBuffer.allocate(524).order(ByteOrder.LITTLE_ENDIAN)
+        buf.putInt(64).putInt(n0inv)
+        buf.put(leBytes(n, 256))
+        buf.put(leBytes(rr, 256))
+        buf.putInt(pub.publicExponent.toInt())
+
+        val b64 = Base64.encodeToString(buf.array(), Base64.NO_WRAP)
+        return "$b64 adbtool\u0000".toByteArray()
+    }
+
+    private fun leBytes(x: BigInteger, size: Int): ByteArray {
+        val be = x.toByteArray()
+        val out = ByteArray(size)
+        for (i in 0 until size) {
+            val idx = be.size - 1 - i
+            if (idx >= 0) out[i] = be[idx]
+        }
+        return out
     }
 }
