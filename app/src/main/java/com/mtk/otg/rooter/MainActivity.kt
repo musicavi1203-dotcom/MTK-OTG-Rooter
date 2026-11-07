@@ -58,14 +58,11 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RooterScreen(usbManager: UsbConnectionManager, viewModel: MainViewModel) {
-    // אוסף את המצב והלוגים מה-ViewModel
     val currentState by viewModel.state.collectAsStateWithLifecycle()
     val logs by viewModel.logs.collectAsStateWithLifecycle()
     
-    // רשימת מכשירים מחוברים (נשלפת מה-UsbManager)
     var connectedDevices by remember { mutableStateOf(usbManager.getConnectedDevices()) }
 
-    // האזנה לאירועי USB (התחברות, התנתקות, הרשאה)
     LaunchedEffect(Unit) {
         usbManager.usbEvents.collect { event ->
             when (event) {
@@ -76,7 +73,6 @@ fun RooterScreen(usbManager: UsbConnectionManager, viewModel: MainViewModel) {
                     connectedDevices = usbManager.getConnectedDevices()
                 }
                 is UsbEvent.PermissionGranted -> {
-                    // ברגע שיש הרשאה, מחליטים מה לעשות לפי המצב
                     if (currentState == RootState.IDLE) {
                         viewModel.connectAdb(event.device)
                     } else if (currentState == RootState.WAITING_FOR_FASTBOOT) {
@@ -100,17 +96,15 @@ fun RooterScreen(usbManager: UsbConnectionManager, viewModel: MainViewModel) {
                 .fillMaxSize()
                 .padding(paddingValues)
                 .padding(16.dp)
-                .verticalScroll(rememberScrollState()), // מאפשר גלילה של כל המסך
+                .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // תצוגת מצב נוכחי
             Text(
                 text = "מצב נוכחי: ${currentState.name}",
                 fontSize = 18.sp,
                 modifier = Modifier.padding(bottom = 16.dp)
             )
 
-            // אזור הכפתורים (משתנה לפי המצב)
             when (currentState) {
                 RootState.IDLE -> {
                     if (connectedDevices.isEmpty()) {
@@ -148,7 +142,6 @@ fun RooterScreen(usbManager: UsbConnectionManager, viewModel: MainViewModel) {
                 RootState.FASTBOOT_CONNECTED -> {
                     Button(
                         onClick = { 
-                            // קריאה לדוגמה לצריבה (בהמשך נחבר לשאיבת קובץ אמיתית)
                             val dummyData = ByteArray(1024) // דמי
                             viewModel.flashPartition("boot", dummyData) 
                         },
@@ -164,7 +157,6 @@ fun RooterScreen(usbManager: UsbConnectionManager, viewModel: MainViewModel) {
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // חלון לוגים (טרמינל)
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -173,7 +165,7 @@ fun RooterScreen(usbManager: UsbConnectionManager, viewModel: MainViewModel) {
             ) {
                 LazyColumn(
                     modifier = Modifier.padding(8.dp),
-                    reverseLayout = true // הודעות חדשות למטה
+                    reverseLayout = true
                 ) {
                     items(logs.reversed()) { log ->
                         Text(
