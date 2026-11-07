@@ -31,7 +31,6 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         usbManager = UsbConnectionManager(this)
-        // תיקון: רושמים את המקלט מיד עם יצירת ה-Activity
         usbManager.register()
         
         setContent {
@@ -46,7 +45,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // תיקון: מסירים רק כשהאפליקציה נסגרת לגמרי
     override fun onDestroy() {
         super.onDestroy()
         usbManager.unregister()
@@ -61,16 +59,20 @@ fun RooterScreen(usbManager: UsbConnectionManager, viewModel: MainViewModel) {
     
     var connectedDevices by remember { mutableStateOf(usbManager.getConnectedDevices()) }
 
+    // האזנה לאירועי USB (חיבור, ניתוק, הרשאה) ורישום שלהם ללוג
     LaunchedEffect(Unit) {
         usbManager.usbEvents.collect { event ->
             when (event) {
                 is UsbEvent.DeviceAttached -> {
                     connectedDevices = usbManager.getConnectedDevices()
+                    viewModel.addLog("התקבל אירוע: מכשיר USB התחבר.")
                 }
                 is UsbEvent.DeviceDetached -> {
                     connectedDevices = usbManager.getConnectedDevices()
+                    viewModel.addLog("התקבל אירוע: מכשיר USB התנתק.")
                 }
                 is UsbEvent.PermissionGranted -> {
+                    viewModel.addLog("התקבל אירוע: הרשאת USB אושרה!")
                     if (currentState == RootState.IDLE) {
                         viewModel.connectAdb(event.device)
                     } else if (currentState == RootState.WAITING_FOR_FASTBOOT) {
@@ -78,7 +80,7 @@ fun RooterScreen(usbManager: UsbConnectionManager, viewModel: MainViewModel) {
                     }
                 }
                 UsbEvent.PermissionDenied -> {
-                    // אפשר להוסיף פה התראה למשתמש
+                    viewModel.addLog("התקבל אירוע: הרשאת USB נדחתה.")
                 }
             }
         }
@@ -100,9 +102,15 @@ fun RooterScreen(usbManager: UsbConnectionManager, viewModel: MainViewModel) {
             Text(
                 text = "מצב נוכחי: ${currentState.name}",
                 fontSize = 18.sp,
+                color = when (currentState) {
+                    RootState.ERROR -> MaterialTheme.colorScheme.error
+                    RootState.ADB_READY, RootState.SUCCESS -> MaterialTheme.colorScheme.primary
+                    else -> MaterialTheme.colorScheme.onBackground
+                },
                 modifier = Modifier.padding(bottom = 16.dp)
             )
 
+            // אזור הכפתורים לפי המצב
             when (currentState) {
                 RootState.IDLE -> {
                     if (connectedDevices.isEmpty()) {
@@ -110,13 +118,20 @@ fun RooterScreen(usbManager: UsbConnectionManager, viewModel: MainViewModel) {
                     } else {
                         connectedDevices.forEach { device ->
                             Button(
-                                onClick = { usbManager.requestPermission(device) },
+                                onClick = { 
+                                    viewModel.addLog("מבקש הרשאת USB...")
+                                    usbManager.requestPermission(device) 
+                                },
                                 modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
                             ) {
                                 Text("בקש הרשאה והתחבר ל-${device.deviceName}")
                             }
                         }
                     }
+                }
+                RootState.ADB_CONNECTING -> {
+                    CircularProgressIndicator(modifier = Modifier.padding(16.dp))
+                    Text("מנסה להתחבר ל-ADB... ודא שניפוי באגים מופעל במכשיר השני ואושר.")
                 }
                 RootState.ADB_READY -> {
                     Button(
@@ -140,13 +155,16 @@ fun RooterScreen(usbManager: UsbConnectionManager, viewModel: MainViewModel) {
                 RootState.FASTBOOT_CONNECTED -> {
                     Button(
                         onClick = { 
-                            val dummyData = ByteArray(1024) // דמי
+                            val dummyData = ByteArray(1024) 
                             viewModel.flashPartition("boot", dummyData) 
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text("צרוב boot.img (דמו)")
                     }
+                }
+                RootState.ERROR -> {
+                    Text("אירעה שגיאה. אנא אפס ונסה שוב.", color = MaterialTheme.colorScheme.error)
                 }
                 else -> {
                     CircularProgressIndicator()
@@ -155,6 +173,7 @@ fun RooterScreen(usbManager: UsbConnectionManager, viewModel: MainViewModel) {
 
             Spacer(modifier = Modifier.height(16.dp))
 
+            // חלון הלוגים
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -163,7 +182,7 @@ fun RooterScreen(usbManager: UsbConnectionManager, viewModel: MainViewModel) {
             ) {
                 LazyColumn(
                     modifier = Modifier.padding(8.dp),
-                    reverseLayout = true
+                    reverseLayout = true 
                 ) {
                     items(logs.reversed()) { log ->
                         Text(
@@ -178,7 +197,10 @@ fun RooterScreen(usbManager: UsbConnectionManager, viewModel: MainViewModel) {
             Spacer(modifier = Modifier.height(16.dp))
 
             Button(
-                onClick = { viewModel.reset() },
+                onClick = { 
+                    viewModel.reset()
+                    connectedDevices = usbManager.getConnectedDevices()
+                },
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
                 modifier = Modifier.fillMaxWidth()
             ) {
