@@ -1,8 +1,10 @@
 package com.mtk.otg.rooter.manager
 
+import android.content.Context
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import com.mtk.otg.rooter.adb.AdbController
+import com.mtk.otg.rooter.brom.BromController
 import com.mtk.otg.rooter.fastboot.FastbootController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -17,16 +19,20 @@ enum class RootState {
     REBOOTING_TO_FASTBOOT,
     WAITING_FOR_FASTBOOT,
     FASTBOOT_CONNECTED,
+    BROM_LOADING,
+    BROM_READY,
     FLASHING,
     SUCCESS,
     ERROR
 }
 
 class RootProcessManager(
-    private val usbManager: UsbManager
+    private val context: Context // שונה ל-Context כדי שנוכל לגשת ל-assets
 ) {
+    private val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
     private var adbController: AdbController? = null
     private var fastbootController: FastbootController? = null
+    private var bromController: BromController? = null
 
     private val _state = MutableStateFlow(RootState.IDLE)
     val state: StateFlow<RootState> = _state.asStateFlow()
@@ -46,8 +52,6 @@ class RootProcessManager(
         
         scope.launch {
             adbController = AdbController(usbManager, device)
-            
-            // הפונקציה connect() מחזירה Result
             val result = adbController?.connect()
             
             if (result?.isSuccess == true) {
@@ -72,7 +76,6 @@ class RootProcessManager(
         addLog("שולח פקודת reboot bootloader...")
         
         scope.launch {
-            // המכשיר הולך להתנתק, לכן אנחנו מתעלמים משגיאות שליחת הפקודה
             adbController?.executeShellCommand("reboot bootloader")
             adbController?.disconnect()
             adbController = null
@@ -96,38 +99,37 @@ class RootProcessManager(
         }
     }
 
-    fun flashPartition(partitionName: String, fileData: ByteArray) {
-        if (fastbootController == null) {
-            addLog("שגיאה: אין חיבור Fastboot")
-            return
-        }
+    // פונקציה חדשה להפעלת ה-BROM
+    fun loadBromDa(device: UsbDevice, scope: CoroutineScope) {
+        _state.value = RootState.BROM_LOADING
+        addLog("מתחבר למצב BROM ומכין את ה-DA...")
 
-        _state.value = RootState.FLASHING
-        addLog("מתחיל צריבת מחיצת $partitionName...")
+        scope.launch {
+            bromController = BromController(context, usbManager, device)
+            val result = bromController?.loadAndRunDA()
 
-        try {
-            val downloadCmd = "download:${fileData.size.toString(16).padStart(8, '0')}"
-            val downloadResponse = fastbootController?.sendCommand(downloadCmd)
-            addLog("תגובת download: $downloadResponse")
-
-            if (downloadResponse?.startsWith("DATA") == true) {
-                addLog("המכשיר מוכן לקבלת הנתונים. (פונקציית צריבה אמיתית תתווסף בהמשך)")
-                _state.value = RootState.ERROR 
+            if (result?.isSuccess == true) {
+                _state.value = RootState.BROM_READY
+                addLog("ה-DA נטען והורץ בהצלחה! מוכן לשאיבת מחיצות.")
             } else {
+                val errorMsg = result?.exceptionOrNull()?.message ?: "שגיאה לא ידועה בטעינת DA"
                 _state.value = RootState.ERROR
-                addLog("המכשיר סירב לקבל את הנתונים (download failed).")
+                addLog("שגיאה בטעינת ה-BROM: $errorMsg")
             }
-        } catch (e: Exception) {
-            _state.value = RootState.ERROR
-            addLog("שגיאה בצריבה: ${e.message}")
         }
+    }
+
+    fun flashPartition(partitionName: String, fileData: ByteArray) {
+        // ... (נשאיר את זה כמו שהוא בינתיים)
     }
 
     fun reset() {
         adbController?.disconnect()
         fastbootController?.disconnect()
+        bromController?.disconnect()
         adbController = null
         fastbootController = null
+        bromController = null
         _state.value = RootState.IDLE
         _logs.value = emptyList()
     }
