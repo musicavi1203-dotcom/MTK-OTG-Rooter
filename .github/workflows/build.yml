@@ -1,9 +1,9 @@
 name: Build Android APK
 
 on:
-  push: # ירוץ על כל פוש, בכל ענף
-  pull_request: # ירוץ על כל עדכון ב-PR
-  workflow_dispatch: # מאפשר הפעלה ידנית
+  push:
+  pull_request:
+  workflow_dispatch:
 
 jobs:
   build:
@@ -21,6 +21,9 @@ jobs:
 
     - name: Setup Android SDK
       uses: android-actions/setup-android@v3
+      with:
+        # אנחנו מתקינים רק את platform-tools ומונעים את ניסיון התקנת החבילה 'tools' שהוסרה
+        packages: 'platform-tools'
 
     - name: Setup Gradle
       uses: gradle/actions/setup-gradle@v4
