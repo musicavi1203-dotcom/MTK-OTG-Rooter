@@ -19,6 +19,8 @@ enum class RootState {
     REBOOTING_TO_FASTBOOT,
     WAITING_FOR_FASTBOOT,
     FASTBOOT_CONNECTED,
+    REBOOTING_TO_BROM, // מצב חדש
+    WAITING_FOR_BROM,  // מצב חדש
     BROM_LOADING,
     BROM_READY,
     FLASHING,
@@ -27,7 +29,7 @@ enum class RootState {
 }
 
 class RootProcessManager(
-    private val context: Context // שונה ל-Context כדי שנוכל לגשת ל-assets
+    private val context: Context
 ) {
     private val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
     private var adbController: AdbController? = null
@@ -92,14 +94,37 @@ class RootProcessManager(
         
         if (fastbootController?.state?.value?.contains("מחובר") == true) {
             _state.value = RootState.FASTBOOT_CONNECTED
-            addLog("Fastboot מחובר ומוכן לצריבה.")
+            addLog("Fastboot מחובר ומוכן.")
         } else {
             _state.value = RootState.ERROR
             addLog("שגיאה בחיבור ל-Fastboot. ודא שהמכשיר במצב Fastboot.")
         }
     }
 
-    // פונקציה חדשה להפעלת ה-BROM
+    // פונקציה חדשה למעבר מ-Fastboot ל-BROM
+    fun rebootToBrom(scope: CoroutineScope) {
+        if (fastbootController == null) {
+            addLog("שגיאה: אין חיבור Fastboot")
+            _state.value = RootState.ERROR
+            return
+        }
+
+        _state.value = RootState.REBOOTING_TO_BROM
+        addLog("שולח פקודת oem reboot-brom...")
+        
+        scope.launch {
+            // שליחת הפקודה למכשיר
+            val response = fastbootController?.sendCommand("oem reboot-brom")
+            addLog("תגובת המכשיר: $response")
+            
+            fastbootController?.disconnect()
+            fastbootController = null
+            
+            _state.value = RootState.WAITING_FOR_BROM
+            addLog("המכשיר מאתחל למצב BROM... אנא המתן לחיבור מחדש.")
+        }
+    }
+
     fun loadBromDa(device: UsbDevice, scope: CoroutineScope) {
         _state.value = RootState.BROM_LOADING
         addLog("מתחבר למצב BROM ומכין את ה-DA...")
