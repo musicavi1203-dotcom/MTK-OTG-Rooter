@@ -33,7 +33,8 @@ class AdbConnection(
             command = AdbProtocol.A_CNXN,
             arg0 = A_VERSION,
             arg1 = MAX_PAYLOAD,
-            data = "host::features=cmd,shell_v2\0".toByteArray()
+            // התיקון כאן: החלפנו את \0 ב-\u0000
+            data = "host::features=cmd,shell_v2\u0000".toByteArray()
         )
 
         sendRaw(cnxnMessage)
@@ -100,7 +101,7 @@ class AdbConnection(
             }
             AdbProtocol.A_AUTH -> {
                 println("ADB: Auth requested (Token received)")
-                _incomingMessages.tryEmit(message) // מעבירים לטיפול ב-Controller
+                _incomingMessages.tryEmit(message)
             }
             AdbProtocol.A_OKAY -> {
                 _incomingMessages.tryEmit(message)
