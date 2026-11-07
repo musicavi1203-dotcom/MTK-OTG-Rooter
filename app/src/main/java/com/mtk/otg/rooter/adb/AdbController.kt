@@ -35,6 +35,7 @@ class AdbController(
     private var currentLocalId = -1
     private var currentRemoteId = -1
     private val commandOutput = ByteArrayOutputStream()
+    private var isAuthenticating = false
 
     companion object {
         private const val TAG = "AdbController"
@@ -57,7 +58,7 @@ class AdbController(
 
                 val endpoints = findEndpoints(usbInterface)
                 if (endpoints == null) {
-                    _connectionState.value = "שגיאה: נקודות קצה (Endpoints) לא נמצאו"
+                    _connectionState.value = "שגיאה: נקודות קצה לא נמצאו"
                     return@launch
                 }
 
@@ -84,6 +85,7 @@ class AdbController(
                 when (message.command) {
                     AdbProtocol.A_CNXN -> {
                         _connectionState.value = "מחובר ומאומת בהצלחה! ✅"
+                        isAuthenticating = false
                     }
                     AdbProtocol.A_AUTH -> {
                         handleAuthRequest(message.data)
@@ -113,16 +115,22 @@ class AdbController(
             keyPair = withContext(Dispatchers.Default) { AdbCrypto.generateKeyPair() }
         }
 
+        // חותמים על הטוקן
         val signedToken = AdbCrypto.signToken(token, keyPair!!)
-        val authSignature = AdbMessage(AdbProtocol.A_AUTH, 2, 0, signedToken)
         
-        val publicKey = AdbCrypto.encodePublicKey(keyPair!!.public as RSAPublicKey)
-        // התיקון: שימוש ב-byteArrayOf(0) במקום סתם 0
-        val publicKeyBytes = publicKey.toByteArray() + byteArrayOf(0)
-        val authPublicKey = AdbMessage(AdbProtocol.A_AUTH, 3, 0, publicKeyBytes)
-
-        adbConnection?.sendRaw(authSignature)
-        adbConnection?.sendRaw(authPublicKey)
+        if (!isAuthenticating) {
+            // שלב 1: שליחת החתימה בלבד
+            isAuthenticating = true
+            val authSignature = AdbMessage(AdbProtocol.A_AUTH, 2, 0, signedToken)
+            adbConnection?.sendRaw(authSignature)
+        } else {
+            // שלב 2: אם המכשיר ביקש שוב (כי הוא לא מכיר אותנו), שולחים את המפתח הציבורי
+            val publicKey = AdbCrypto.encodePublicKey(keyPair!!.public as RSAPublicKey)
+            // המפתח הציבורי חייב להסתיים בתו Null
+            val publicKeyBytes = publicKey.toByteArray(Charsets.UTF_8) + byteArrayOf(0)
+            val authPublicKey = AdbMessage(AdbProtocol.A_AUTH, 3, 0, publicKeyBytes)
+            adbConnection?.sendRaw(authPublicKey)
+        }
     }
 
     fun executeShellCommand(command: String) {
@@ -134,7 +142,6 @@ class AdbController(
         currentLocalId = nextLocalId++
         commandOutput.reset()
 
-        // התיקון: החלפנו את \0 ב-\u0000
         val openMessage = AdbMessage(
             command = AdbProtocol.A_OPEN,
             arg0 = currentLocalId,
