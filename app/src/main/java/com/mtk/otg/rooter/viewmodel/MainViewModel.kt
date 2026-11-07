@@ -12,11 +12,10 @@ import kotlinx.coroutines.flow.StateFlow
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     
-    private val usbManager = application.getSystemService(Application.USB_SERVICE) as UsbManager
-    private val processManager = RootProcessManager(usbManager)
+    // שינינו את האתחול כך שיעביר את ה-Application (Context) למנהל התהליכים
+    private val processManager = RootProcessManager(application)
 
     init {
-        // אתחול המפתחות הקריפטוגרפיים (יוצר פעם אחת ושומר)
         AdbCrypto.init(application)
     }
 
@@ -33,6 +32,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun connectFastboot(device: UsbDevice) {
         processManager.connectFastboot(device)
+    }
+
+    // הפונקציה החדשה שמפעילה את ה-BROM
+    fun loadBromDa(device: UsbDevice) {
+        processManager.loadBromDa(device, viewModelScope)
     }
 
     fun flashPartition(partitionName: String, data: ByteArray) {
