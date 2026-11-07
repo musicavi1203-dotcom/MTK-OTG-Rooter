@@ -1,23 +1,18 @@
 package com.mtk.otg.rooter.adb
 
-import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbDeviceConnection
-import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
 import android.util.Log
 import com.mtk.otg.rooter.protocol.AdbConnection
 import com.mtk.otg.rooter.protocol.AdbCrypto
-import com.mtk.otg.rooter.protocol.AdbMessage
-import com.mtk.otg.rooter.protocol.AdbProtocol
-import kotlinx.coroutines.*
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import java.io.ByteArrayOutputStream
-import java.security.KeyPair
-import java.security.interfaces.RSAPublicKey
+import kotlinx.coroutines.withContext
+import java.io.IOException
 
 class AdbController(
     private val usbManager: UsbManager,
@@ -25,17 +20,9 @@ class AdbController(
 ) {
     private var connection: UsbDeviceConnection? = null
     private var adbConnection: AdbConnection? = null
-    private var keyPair: KeyPair? = null
-    private var scope: CoroutineScope? = null
 
     private val _connectionState = MutableStateFlow<String>("מנותק")
     val connectionState: StateFlow<String> = _connectionState.asStateFlow()
-
-    private var nextLocalId = 1
-    private var currentLocalId = -1
-    private var currentRemoteId = -1
-    private val commandOutput = ByteArrayOutputStream()
-    private var isAuthenticating = false
 
     companion object {
         private const val TAG = "AdbController"
@@ -44,126 +31,54 @@ class AdbController(
         private const val ADB_PROTOCOL = 0x01
     }
 
-    fun connect(scope: CoroutineScope) {
-        this.scope = scope
+    // פונקציית החיבור עכשיו סינכרונית (רצה ברקע ומחזירה תוצאה)
+    suspend fun connect(): Result<Unit> = withContext(Dispatchers.IO) {
         _connectionState.value = "מתחבר..."
+        try {
+            val usbInterface = findAdbInterface(device)
+                ?: throw IOException("ממשק ADB לא נמצא. ודא שניפוי באגים מופעל במכשיר השני.")
 
-        scope.launch(Dispatchers.IO) {
-            try {
-                val usbInterface = findAdbInterface(device)
-                if (usbInterface == null) {
-                    _connectionState.value = "שגיאה: ממשק ADB לא נמצא במכשיר"
-                    return@launch
-                }
+            connection = usbManager.openDevice(device)
+                ?: throw IOException("לא ניתן לפתוח את החיבור ל-USB (אולי אין הרשאה?).")
 
-                val endpoints = findEndpoints(usbInterface)
-                if (endpoints == null) {
-                    _connectionState.value = "שגיאה: נקודות קצה לא נמצאו"
-                    return@launch
-                }
+            _connectionState.value = "מבצע לחיצת יד (Handshake)..."
+            
+            // יצירת החיבור החדש (שמקבל את ה-Interface ולא את ה-Endpoints)
+            adbConnection = AdbConnection(connection!!, usbInterface)
 
-                connection = usbManager.openDevice(device)
-                if (connection == null || !connection!!.claimInterface(usbInterface, true)) {
-                    _connectionState.value = "שגיאה: לא ניתן להשתלט על ממשק ה-USB"
-                    return@launch
-                }
+            // ביצוע הלחיצה עם המפתחות
+            adbConnection?.handshake(
+                signToken = { token -> AdbCrypto.signToken(token) },
+                getPublicKey = { AdbCrypto.encodePublicKeyAdb() }
+            )
 
-                adbConnection = AdbConnection(connection!!, endpoints.first, endpoints.second)
-                
-                // האזנה לשגיאות USB פנימיות והצגתן ב-UI
-                launch {
-                    adbConnection?.logMessages?.collect { log ->
-                        _connectionState.value = log
-                    }
-                }
-
-                listenToAdbMessages()
-                adbConnection?.connect(this@launch)
-
-            } catch (e: Exception) {
-                Log.e(TAG, "Connection failed", e)
-                _connectionState.value = "שגיאה בחיבור: ${e.message}"
-            }
+            _connectionState.value = "מחובר ומאומת בהצלחה! ✅"
+            Result.success(Unit)
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Connection failed", e)
+            _connectionState.value = "שגיאה: ${e.message}"
+            disconnect()
+            Result.failure(e)
         }
     }
 
-    private fun listenToAdbMessages() {
-        scope?.launch(Dispatchers.IO) {
-            adbConnection?.incomingMessages?.collect { message ->
-                when (message.command) {
-                    AdbProtocol.A_CNXN -> {
-                        _connectionState.value = "מחובר ומאומת בהצלחה! ✅"
-                        isAuthenticating = false
-                    }
-                    AdbProtocol.A_AUTH -> {
-                        _connectionState.value = "התקבלה בקשת אימות (Token)"
-                        handleAuthRequest(message.data)
-                    }
-                    AdbProtocol.A_OKAY -> {
-                        if (currentRemoteId == -1) {
-                            currentRemoteId = message.arg0
-                        }
-                    }
-                    AdbProtocol.A_WRTE -> {
-                        commandOutput.write(message.data)
-                        sendOkay(message.arg0)
-                    }
-                    AdbProtocol.A_CLSE -> {
-                        currentLocalId = -1
-                        currentRemoteId = -1
-                    }
-                }
-            }
+    // שליחת פקודה למכשיר
+    suspend fun executeShellCommand(command: String): Result<String> = withContext(Dispatchers.IO) {
+        val adb = adbConnection ?: return@withContext Result.failure(IOException("אין חיבור ADB פעיל"))
+        try {
+            val result = adb.shell(command)
+            Result.success(result)
+        } catch (e: Exception) {
+            Result.failure(e)
         }
-    }
-
-    private suspend fun handleAuthRequest(token: ByteArray) {
-        if (keyPair == null) {
-            keyPair = withContext(Dispatchers.Default) { AdbCrypto.generateKeyPair() }
-        }
-
-        val signedToken = AdbCrypto.signToken(token, keyPair!!)
-        
-        if (!isAuthenticating) {
-            _connectionState.value = "שולח חתימת RSA (Signature)..."
-            isAuthenticating = true
-            val authSignature = AdbMessage(AdbProtocol.A_AUTH, 2, 0, signedToken)
-            adbConnection?.sendRaw(authSignature)
-        } else {
-            _connectionState.value = "שולח מפתח ציבורי (Public Key)... אנא אשר במכשיר השני."
-            val publicKey = AdbCrypto.encodePublicKey(keyPair!!.public as RSAPublicKey)
-            val publicKeyBytes = publicKey.toByteArray(Charsets.UTF_8) + byteArrayOf(0)
-            val authPublicKey = AdbMessage(AdbProtocol.A_AUTH, 3, 0, publicKeyBytes)
-            adbConnection?.sendRaw(authPublicKey)
-        }
-    }
-
-    fun executeShellCommand(command: String) {
-        if (currentLocalId != -1) {
-            Log.w(TAG, "Command already running")
-            return
-        }
-
-        currentLocalId = nextLocalId++
-        commandOutput.reset()
-
-        val openMessage = AdbMessage(
-            command = AdbProtocol.A_OPEN,
-            arg0 = currentLocalId,
-            arg1 = 0,
-            data = "shell:$command\u0000".toByteArray()
-        )
-        adbConnection?.sendRaw(openMessage)
-    }
-
-    private fun sendOkay(remoteId: Int) {
-        val okayMessage = AdbMessage(AdbProtocol.A_OKAY, currentLocalId, remoteId)
-        adbConnection?.sendRaw(okayMessage)
     }
 
     fun disconnect() {
-        adbConnection?.disconnect()
+        adbConnection?.close()
         connection?.close()
+        adbConnection = null
+        connection = null
         _connectionState.value = "מנותק"
     }
 
@@ -177,22 +92,5 @@ class AdbController(
             }
         }
         return null
-    }
-
-    private fun findEndpoints(usbInterface: UsbInterface): Pair<UsbEndpoint, UsbEndpoint>? {
-        var inEndpoint: UsbEndpoint? = null
-        var outEndpoint: UsbEndpoint? = null
-
-        for (i in 0 until usbInterface.endpointCount) {
-            val ep = usbInterface.getEndpoint(i)
-            if (ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK) {
-                if (ep.direction == UsbConstants.USB_DIR_IN) inEndpoint = ep
-                else outEndpoint = ep
-            }
-        }
-
-        return if (inEndpoint != null && outEndpoint != null) {
-            Pair(inEndpoint, outEndpoint)
-        } else null
     }
 }
