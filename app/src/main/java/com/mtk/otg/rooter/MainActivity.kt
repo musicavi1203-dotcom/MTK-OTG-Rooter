@@ -1,10 +1,6 @@
 package com.mtk.otg.rooter
 
-import android.app.PendingIntent
-import android.content.Context
-import android.content.Intent
 import android.hardware.usb.UsbDevice
-import android.hardware.usb.UsbManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -15,51 +11,79 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.mtk.otg.rooter.ui.theme.MTKOTGRooterTheme
+import com.mtk.otg.rooter.usb.UsbConnectionManager
+import com.mtk.otg.rooter.usb.UsbEvent
 
 class MainActivity : ComponentActivity() {
+    
+    private lateinit var usbManager: UsbConnectionManager
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        usbManager = UsbConnectionManager(this)
+        
         setContent {
             MTKOTGRooterTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    RooterScreen()
+                    RooterScreen(usbManager)
                 }
             }
         }
+    }
+
+    // רושמים את המקלט כשהאפליקציה חוזרת לקדמה
+    override fun onResume() {
+        super.onResume()
+        usbManager.register()
+    }
+
+    // מסירים את הרישום כשהאפליקציה עוברת לרקע (חוסך סוללה ומונע דליפות זיכרון)
+    override fun onPause() {
+        super.onPause()
+        usbManager.unregister()
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun RooterScreen() {
-    val context = LocalContext.current
-    val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
+fun RooterScreen(usbManager: UsbConnectionManager) {
+    // אתחול רשימת המכשירים המחוברים
+    var connectedDevices by remember { mutableStateOf(usbManager.getConnectedDevices()) }
     
-    // State לשמירת רשימת המכשירים המחוברים
-    var connectedDevices by remember { mutableStateOf<List<UsbDevice>>(emptyList()) }
+    // הודעת לוג אחרונה (למשל "מכשיר התחבר" או "התקבלה הרשאה")
+    var logMessage by remember { mutableStateOf("ממתין לחיבור מכשיר...") }
 
-    // פונקציה לרענון רשימת המכשירים
-    fun refreshDevices() {
-        connectedDevices = usbManager.deviceList.values.toList()
-    }
-
-    // קריאה ראשונית בעליית המסך
+    // האזנה לאירועי USB בזמן אמת
     LaunchedEffect(Unit) {
-        refreshDevices()
+        usbManager.usbEvents.collect { event ->
+            when (event) {
+                is UsbEvent.DeviceAttached -> {
+                    logMessage = "מכשיר חדש זוהה: ${event.device.deviceName}"
+                    connectedDevices = usbManager.getConnectedDevices()
+                }
+                is UsbEvent.DeviceDetached -> {
+                    logMessage = "מכשיר התנתק."
+                    connectedDevices = usbManager.getConnectedDevices()
+                }
+                is UsbEvent.PermissionGranted -> {
+                    logMessage = "התקבלה הרשאת USB בהצלחה!"
+                }
+                UsbEvent.PermissionDenied -> {
+                    logMessage = "הרשאת USB נדחתה על ידי המשתמש."
+                }
+            }
+        }
     }
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("MTK OTG Rooter") }
-            )
+            TopAppBar(title = { Text("MTK OTG Rooter") })
         }
     ) { paddingValues ->
         Column(
@@ -69,27 +93,26 @@ fun RooterScreen() {
                 .padding(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text(
-                text = "חבר את מכשיר ה-MTK באמצעות כבל OTG",
-                fontSize = 18.sp,
-                modifier = Modifier.padding(bottom = 16.dp)
-            )
-
-            Button(
-                onClick = { refreshDevices() },
-                modifier = Modifier.fillMaxWidth()
+            // חיווי סטטוס דינמי
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
             ) {
-                Text("סרוק מכשירים מחוברים")
+                Text(
+                    text = logMessage,
+                    modifier = Modifier.padding(16.dp),
+                    fontSize = 16.sp
+                )
             }
 
             Spacer(modifier = Modifier.height(16.dp))
 
             if (connectedDevices.isEmpty()) {
-                Text("לא נמצאו מכשירים מחוברים.")
+                Text("אנא חבר את מכשיר ה-MTK באמצעות מתאם OTG.")
             } else {
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
                     items(connectedDevices) { device ->
-                        DeviceCard(device = device, usbManager = usbManager, context = context)
+                        DeviceCard(device = device, usbManager = usbManager)
                     }
                 }
             }
@@ -98,7 +121,7 @@ fun RooterScreen() {
 }
 
 @Composable
-fun DeviceCard(device: UsbDevice, usbManager: UsbManager, context: Context) {
+fun DeviceCard(device: UsbDevice, usbManager: UsbConnectionManager) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -111,27 +134,11 @@ fun DeviceCard(device: UsbDevice, usbManager: UsbManager, context: Context) {
             
             Spacer(modifier = Modifier.height(8.dp))
             
-            val hasPermission = usbManager.hasPermission(device)
-            
-            if (hasPermission) {
-                Text("סטטוס: יש הרשאה ✅", color = MaterialTheme.colorScheme.primary)
-            } else {
-                Button(
-                    onClick = {
-                        // בקשת הרשאה ל-USB
-                        val intent = Intent("com.mtk.otg.rooter.USB_PERMISSION")
-                        intent.setPackage(context.packageName)
-                        val pendingIntent = PendingIntent.getBroadcast(
-                            context, 
-                            0, 
-                            intent, 
-                            PendingIntent.FLAG_IMMUTABLE
-                        )
-                        usbManager.requestPermission(device, pendingIntent)
-                    }
-                ) {
-                    Text("בקש הרשאת USB")
-                }
+            Button(
+                onClick = { usbManager.requestPermission(device) },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("בקש הרשאת גישה (USB Permission)")
             }
         }
     }
