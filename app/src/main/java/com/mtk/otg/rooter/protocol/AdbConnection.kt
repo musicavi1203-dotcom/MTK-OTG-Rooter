@@ -6,8 +6,6 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
-import java.io.ByteArrayOutputStream
-import java.nio.ByteBuffer
 
 class AdbConnection(
     private val connection: UsbDeviceConnection,
@@ -22,7 +20,6 @@ class AdbConnection(
     val incomingMessages: SharedFlow<AdbMessage> = _incomingMessages.asSharedFlow()
 
     companion object {
-        // מזהה המכשיר של ADB (בדרך כלל 0x12345678)
         private const val A_VERSION = 0x01000000
         private const val MAX_PAYLOAD = 4096
         private const val TIMEOUT_MS = 3000
@@ -32,15 +29,14 @@ class AdbConnection(
     fun connect(scope: CoroutineScope) {
         if (isConnected) return
 
-        // הודעת החיבור הראשונית
         val cnxnMessage = AdbMessage(
             command = AdbProtocol.A_CNXN,
             arg0 = A_VERSION,
             arg1 = MAX_PAYLOAD,
-            data = "host::features=cmd,shell_v2\0".toByteArray() // מזהה את האפליקציה שלנו כ"מארח"
+            data = "host::features=cmd,shell_v2\0".toByteArray()
         )
 
-        write(cnxnMessage)
+        sendRaw(cnxnMessage)
         isConnected = true
 
         // מתחילים להקשיב לתשובות מהמכשיר ברקע
@@ -49,15 +45,15 @@ class AdbConnection(
         }
     }
 
-    // שליחת חבילה למכשיר
-    private fun write(message: AdbMessage) {
+    // חשיפה של פונקציית השליחה כדי שנוכל להשתמש בה גם מה-AdbController
+    fun sendRaw(message: AdbMessage) {
         val bytes = message.toByteArray()
         connection.bulkTransfer(endpointOut, bytes, bytes.size, TIMEOUT_MS)
     }
 
     // לולאה שקוראת נתונים מה-USB כל הזמן
     private suspend fun readLoop() {
-        val buffer = ByteArray(16384) // חוצץ לקריאת נתונים
+        val buffer = ByteArray(16384)
         
         while (isConnected) {
             val bytesRead = connection.bulkTransfer(endpointIn, buffer, buffer.size, TIMEOUT_MS)
@@ -66,17 +62,16 @@ class AdbConnection(
                 val receivedBytes = buffer.copyOf(bytesRead)
                 processIncomingData(receivedBytes)
             } else if (bytesRead < 0) {
-                // שגיאה בקריאה או שהמכשיר התנתק
                 delay(100) 
             }
         }
     }
 
-    // מטפל בנתונים גולמיים שמגיעים (לפעמים מגיעות כמה חבילות ביחד)
+    // מטפל בנתונים גולמיים שמגיעים
     private fun processIncomingData(bytes: ByteArray) {
         var offset = 0
         while (offset < bytes.size) {
-            if (bytes.size - offset < AdbProtocol.HEADER_SIZE) break // חבילה חלקית
+            if (bytes.size - offset < AdbProtocol.HEADER_SIZE) break
             
             val headerBytes = bytes.copyOfRange(offset, offset + AdbProtocol.HEADER_SIZE)
             val message = AdbMessage.fromByteArray(headerBytes + ByteArray(0)) ?: break
@@ -84,7 +79,7 @@ class AdbConnection(
             val dataLength = message.data.size
             val totalPacketLength = AdbProtocol.HEADER_SIZE + dataLength
 
-            if (bytes.size - offset < totalPacketLength) break // החבילה עוד לא הגיעה במלואה
+            if (bytes.size - offset < totalPacketLength) break
 
             val fullPacketBytes = bytes.copyOfRange(offset, offset + totalPacketLength)
             val fullMessage = AdbMessage.fromByteArray(fullPacketBytes)
@@ -101,33 +96,23 @@ class AdbConnection(
     private fun handleMessage(message: AdbMessage) {
         when (message.command) {
             AdbProtocol.A_CNXN -> {
-                // החיבור אושר!
                 println("ADB: Connected successfully!")
             }
             AdbProtocol.A_AUTH -> {
-                // המכשיר מבקש אימות. כאן נצטרך לשלוח חתימת RSA
                 println("ADB: Auth requested (Token received)")
-                handleAuth(message.data)
+                _incomingMessages.tryEmit(message) // מעבירים לטיפול ב-Controller
             }
             AdbProtocol.A_OKAY -> {
-                // ערוץ נפתח או שנתונים התקבלו
                 _incomingMessages.tryEmit(message)
             }
             AdbProtocol.A_WRTE -> {
-                // התקבלו נתונים (למשל פלט של פקודת shell)
                 _incomingMessages.tryEmit(message)
             }
             AdbProtocol.A_CLSE -> {
-                // ערוץ נסגר
                 println("ADB: Channel closed")
+                _incomingMessages.tryEmit(message)
             }
         }
-    }
-
-    // פונקציה זמנית לאימות (בהמשך נממש פה את ה-RSA)
-    private fun handleAuth(token: ByteArray) {
-        println("Auth token received, size: ${token.size}. (RSA signing not implemented yet)")
-        // כאן נשלח את ה-A_AUTH בחזרה עם החתימה
     }
 
     // סגירת החיבור
