@@ -17,7 +17,6 @@ class UsbConnectionManager(private val context: Context) {
 
     private val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
 
-    // אירועים שה-UI או ה-State Machine יוכלו להקשיב להם
     private val _usbEvents = MutableSharedFlow<UsbEvent>()
     val usbEvents: SharedFlow<UsbEvent> = _usbEvents.asSharedFlow()
 
@@ -25,7 +24,6 @@ class UsbConnectionManager(private val context: Context) {
         const val ACTION_USB_PERMISSION = "com.mtk.otg.rooter.USB_PERMISSION"
     }
 
-    // ה-BroadcastReceiver שמקשיב לחיבור/ניתוק של USB
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
@@ -54,7 +52,6 @@ class UsbConnectionManager(private val context: Context) {
         }
     }
 
-    // עוזר לשלוף את ההתקן מה-Intent (עובד גם בגרסאות אנדרואיד חדשות)
     private fun getUsbDevice(intent: Intent): UsbDevice? {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
@@ -64,7 +61,6 @@ class UsbConnectionManager(private val context: Context) {
         }
     }
 
-    // רושם את המקלט (חייב לקרות ב-onResume של האפליקציה)
     fun register() {
         val filter = IntentFilter().apply {
             addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
@@ -72,16 +68,15 @@ class UsbConnectionManager(private val context: Context) {
             addAction(ACTION_USB_PERMISSION)
         }
         
-        // תמיכה בדרישות האבטחה של אנדרואיד 14+
+        // התיקון כאן: שינינו ל-RECEIVER_EXPORTED כדי שמערכת אנדרואיד תוכל להעביר לנו את אישור ההרשאה
         ContextCompat.registerReceiver(
             context,
             usbReceiver,
             filter,
-            ContextCompat.RECEIVER_NOT_EXPORTED
+            ContextCompat.RECEIVER_EXPORTED
         )
     }
 
-    // מסיר את הרישום (חייב לקרות ב-onPause או ב-onDestroy)
     fun unregister() {
         try {
             context.unregisterReceiver(usbReceiver)
@@ -90,7 +85,6 @@ class UsbConnectionManager(private val context: Context) {
         }
     }
 
-    // פונקציה לבקשת הרשאה מהמשתמש
     fun requestPermission(device: UsbDevice) {
         if (usbManager.hasPermission(device)) {
             _usbEvents.tryEmit(UsbEvent.PermissionGranted(device))
@@ -111,13 +105,11 @@ class UsbConnectionManager(private val context: Context) {
         usbManager.requestPermission(device, pendingIntent)
     }
 
-    // פונקציה לקבלת רשימת המכשירים המחוברים כרגע
     fun getConnectedDevices(): List<UsbDevice> {
         return usbManager.deviceList.values.toList()
     }
 }
 
-// מחלקת חותם (Sealed Class) שמייצגת את כל האירועים האפשריים ב-USB
 sealed class UsbEvent {
     data class DeviceAttached(val device: UsbDevice) : UsbEvent()
     data class DeviceDetached(val device: UsbDevice) : UsbEvent()
