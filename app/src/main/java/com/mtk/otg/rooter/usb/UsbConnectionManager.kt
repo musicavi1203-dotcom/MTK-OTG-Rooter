@@ -13,16 +13,28 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 
+// מצבי החיבור האפשריים של המכשיר
+enum class DeviceMode {
+    ADB,
+    FASTBOOT,
+    BROM,
+    UNKNOWN
+}
+
 class UsbConnectionManager(private val context: Context) {
 
     private val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
 
-    // התיקון: הוספנו extraBufferCapacity כדי שאירועים לא יאבדו אם ה-UI עסוק
     private val _usbEvents = MutableSharedFlow<UsbEvent>(extraBufferCapacity = 1)
     val usbEvents: SharedFlow<UsbEvent> = _usbEvents.asSharedFlow()
 
     companion object {
         const val ACTION_USB_PERMISSION = "com.mtk.otg.rooter.USB_PERMISSION"
+        
+        // מזהי USB של MediaTek
+        const val MTK_VID = 0x0E8D
+        const val BROM_PID = 0x0003
+        const val PRELOADER_PID = 0x2000
     }
 
     private val usbReceiver = object : BroadcastReceiver() {
@@ -107,6 +119,29 @@ class UsbConnectionManager(private val context: Context) {
 
     fun getConnectedDevices(): List<UsbDevice> {
         return usbManager.deviceList.values.toList()
+    }
+
+    // פונקציה חדשה שמזהה את מצב המכשיר לפי המזהים שלו
+    fun getDeviceMode(device: UsbDevice): DeviceMode {
+        // בדיקת מצב BROM / Preloader
+        if (device.vendorId == MTK_VID) {
+            if (device.productId == BROM_PID || device.productId == PRELOADER_PID) {
+                return DeviceMode.BROM
+            }
+        }
+
+        // בדיקת ADB ו-Fastboot לפי ה-Interface
+        for (i in 0 until device.interfaceCount) {
+            val intf = device.getInterface(i)
+            if (intf.interfaceClass == 0xFF && intf.interfaceSubclass == 0x42) {
+                when (intf.interfaceProtocol) {
+                    0x01 -> return DeviceMode.ADB
+                    0x03 -> return DeviceMode.FASTBOOT
+                }
+            }
+        }
+
+        return DeviceMode.UNKNOWN
     }
 }
 
