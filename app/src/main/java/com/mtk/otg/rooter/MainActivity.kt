@@ -73,7 +73,6 @@ fun RooterScreen(usbManager: UsbConnectionManager, viewModel: MainViewModel) {
                 is UsbEvent.PermissionGranted -> {
                     viewModel.addLog("התקבל אירוע: הרשאת USB אושרה!")
                     
-                    // מנתבים את הפעולה לפי סוג המכשיר שזוהה
                     when (usbManager.getDeviceMode(event.device)) {
                         DeviceMode.ADB -> viewModel.connectAdb(event.device)
                         DeviceMode.FASTBOOT -> viewModel.connectFastboot(event.device)
@@ -162,19 +161,44 @@ fun RooterScreen(usbManager: UsbConnectionManager, viewModel: MainViewModel) {
                     }
                 }
                 RootState.FASTBOOT_CONNECTED -> {
-                    Button(
-                        onClick = { 
-                            val dummyData = ByteArray(1024) 
-                            viewModel.flashPartition("boot", dummyData) 
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("צרוב boot.img (דמו)")
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Button(
+                            onClick = { 
+                                val dummyData = ByteArray(1024) 
+                                viewModel.flashPartition("boot", dummyData) 
+                            },
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                        ) {
+                            Text("צרוב boot.img (דמו)")
+                        }
+                        
+                        // הכפתור החדש למעבר ל-BROM
+                        Button(
+                            onClick = { viewModel.rebootToBrom() },
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                        ) {
+                            Text("עבור למצב BROM (oem reboot-brom)")
+                        }
+                    }
+                }
+                RootState.REBOOTING_TO_BROM -> {
+                    CircularProgressIndicator(modifier = Modifier.padding(16.dp))
+                    Text("שולח פקודת oem reboot-brom...")
+                }
+                RootState.WAITING_FOR_BROM -> {
+                    Text("המכשיר מאתחל... אנא המתן לחיבור מחדש במצב BROM.")
+                    if (connectedDevices.isNotEmpty()) {
+                        Button(
+                            onClick = { usbManager.requestPermission(connectedDevices.first()) },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("זהה מחדש והתחבר ל-BROM")
+                        }
                     }
                 }
                 RootState.BROM_READY -> {
                     Text("ה-DA נטען בהצלחה! המכשיר מוכן לשאיבת מחיצות.")
-                    // כאן בהמשך נוסיף כפתור לשאיבת המחיצות
                     Button(
                         onClick = { viewModel.addLog("פונקציית שאיבת מחיצות תתווסף בקרוב...") },
                         modifier = Modifier.fillMaxWidth()
