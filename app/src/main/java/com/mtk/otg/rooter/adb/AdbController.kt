@@ -28,11 +28,9 @@ class AdbController(
     private var keyPair: KeyPair? = null
     private var scope: CoroutineScope? = null
 
-    // מצב החיבור (משמש את ה-UI)
     private val _connectionState = MutableStateFlow<String>("מנותק")
     val connectionState: StateFlow<String> = _connectionState.asStateFlow()
 
-    // מזהה ייחודי לערוץ (Stream) שאנחנו פותחים
     private var nextLocalId = 1
     private var currentLocalId = -1
     private var currentRemoteId = -1
@@ -40,41 +38,35 @@ class AdbController(
 
     companion object {
         private const val TAG = "AdbController"
-        // המזהה של ממשק ADB בתוך ה-USB (בדרך כלל Class 255, Subclass 66, Protocol 1)
         private const val ADB_CLASS = 0xFF
         private const val ADB_SUBCLASS = 0x42
         private const val ADB_PROTOCOL = 0x01
     }
 
-    // פונקציה ראשית להתחברות
     fun connect(scope: CoroutineScope) {
         this.scope = scope
         _connectionState.value = "מתחבר..."
 
         scope.launch(Dispatchers.IO) {
             try {
-                // 1. מציאת ממשק ה-ADB
                 val usbInterface = findAdbInterface(device)
                 if (usbInterface == null) {
                     _connectionState.value = "שגיאה: ממשק ADB לא נמצא במכשיר"
                     return@launch
                 }
 
-                // 2. מציאת ה-Endpoints (קריאה וכתיבה)
                 val endpoints = findEndpoints(usbInterface)
                 if (endpoints == null) {
                     _connectionState.value = "שגיאה: נקודות קצה (Endpoints) לא נמצאו"
                     return@launch
                 }
 
-                // 3. פתיחת החיבור ל-USB
                 connection = usbManager.openDevice(device)
                 if (connection == null || !connection!!.claimInterface(usbInterface, true)) {
                     _connectionState.value = "שגיאה: לא ניתן להשתלט על ממשק ה-USB"
                     return@launch
                 }
 
-                // 4. יצירת החיבור ל-ADB והתחלת האזנה
                 adbConnection = AdbConnection(connection!!, endpoints.first, endpoints.second)
                 listenToAdbMessages()
                 adbConnection?.connect(this@launch)
@@ -86,7 +78,6 @@ class AdbController(
         }
     }
 
-    // האזנה להודעות שמגיעות מה-ADB (כמו AUTH, OKAY, WRTE)
     private fun listenToAdbMessages() {
         scope?.launch(Dispatchers.IO) {
             adbConnection?.incomingMessages?.collect { message ->
@@ -98,19 +89,15 @@ class AdbController(
                         handleAuthRequest(message.data)
                     }
                     AdbProtocol.A_OKAY -> {
-                        // הערוץ נפתח, אפשר לשלוח נתונים
                         if (currentRemoteId == -1) {
                             currentRemoteId = message.arg0
                         }
                     }
                     AdbProtocol.A_WRTE -> {
-                        // קיבלנו פלט של פקודה
                         commandOutput.write(message.data)
-                        // שולחים אישור קבלה (OKAY) כדי שהמכשיר ימשיך לשלוח
                         sendOkay(message.arg0)
                     }
                     AdbProtocol.A_CLSE -> {
-                        // הערוץ נסגר, הפקודה הסתיימה
                         currentLocalId = -1
                         currentRemoteId = -1
                     }
@@ -119,29 +106,25 @@ class AdbController(
         }
     }
 
-    // טיפול בבקשת אימות מהמכשיר (RSA)
     private suspend fun handleAuthRequest(token: ByteArray) {
         _connectionState.value = "מבצע אימות (RSA)..."
         
-        // מייצרים מפתח אם אין (פעם אחת)
         if (keyPair == null) {
             keyPair = withContext(Dispatchers.Default) { AdbCrypto.generateKeyPair() }
         }
 
-        // חותמים על הטוקן ושולחים אותו
         val signedToken = AdbCrypto.signToken(token, keyPair!!)
         val authSignature = AdbMessage(AdbProtocol.A_AUTH, 2, 0, signedToken)
         
-        // שולחים גם את המפתח הציבורי (במקרה שהמכשיר לא מכיר אותנו וירצה להציג חלון)
         val publicKey = AdbCrypto.encodePublicKey(keyPair!!.public as RSAPublicKey)
-        val authPublicKey = AdbMessage(AdbProtocol.A_AUTH, 3, 0, publicKey.toByteArray() + 0)
+        // התיקון: שימוש ב-byteArrayOf(0) במקום סתם 0
+        val publicKeyBytes = publicKey.toByteArray() + byteArrayOf(0)
+        val authPublicKey = AdbMessage(AdbProtocol.A_AUTH, 3, 0, publicKeyBytes)
 
-        // שליחת החבילות דרך החיבור (נצטרך לחשוף פונקציית שליחה ב-AdbConnection)
         adbConnection?.sendRaw(authSignature)
         adbConnection?.sendRaw(authPublicKey)
     }
 
-    // שליחת פקודת Shell למכשיר
     fun executeShellCommand(command: String) {
         if (currentLocalId != -1) {
             Log.w(TAG, "Command already running")
@@ -151,30 +134,26 @@ class AdbController(
         currentLocalId = nextLocalId++
         commandOutput.reset()
 
-        // פקודת OPEN פותחת ערוץ חדש לפקודת ה-shell
+        // התיקון: החלפנו את \0 ב-\u0000
         val openMessage = AdbMessage(
             command = AdbProtocol.A_OPEN,
             arg0 = currentLocalId,
             arg1 = 0,
-            data = "shell:$command\0".toByteArray()
+            data = "shell:$command\u0000".toByteArray()
         )
         adbConnection?.sendRaw(openMessage)
     }
 
-    // שליחת אישור (OKAY) למכשיר
     private fun sendOkay(remoteId: Int) {
         val okayMessage = AdbMessage(AdbProtocol.A_OKAY, currentLocalId, remoteId)
         adbConnection?.sendRaw(okayMessage)
     }
 
-    // סגירת החיבור
     fun disconnect() {
         adbConnection?.disconnect()
         connection?.close()
         _connectionState.value = "מנותק"
     }
-
-    // --- פונקציות עזר למציאת ה-USB ---
 
     private fun findAdbInterface(device: UsbDevice): UsbInterface? {
         for (i in 0 until device.interfaceCount) {
