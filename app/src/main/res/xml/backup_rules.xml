@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- 
+      כאן מגדירים אילו נתונים של האפליקציה יגובו אוטומטית לענן של גוגל.
+      בינתיים אנחנו משאירים את זה בסיסי (גיבוי העדפות בלבד).
+    -->
+    <include domain="sharedpref" path="."/>
+</full-backup-content>
