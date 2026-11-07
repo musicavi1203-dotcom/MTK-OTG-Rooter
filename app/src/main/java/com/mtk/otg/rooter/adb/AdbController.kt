@@ -69,6 +69,14 @@ class AdbController(
                 }
 
                 adbConnection = AdbConnection(connection!!, endpoints.first, endpoints.second)
+                
+                // האזנה לשגיאות USB פנימיות והצגתן ב-UI
+                launch {
+                    adbConnection?.logMessages?.collect { log ->
+                        _connectionState.value = log
+                    }
+                }
+
                 listenToAdbMessages()
                 adbConnection?.connect(this@launch)
 
@@ -88,6 +96,7 @@ class AdbController(
                         isAuthenticating = false
                     }
                     AdbProtocol.A_AUTH -> {
+                        _connectionState.value = "התקבלה בקשת אימות (Token)"
                         handleAuthRequest(message.data)
                     }
                     AdbProtocol.A_OKAY -> {
@@ -109,24 +118,20 @@ class AdbController(
     }
 
     private suspend fun handleAuthRequest(token: ByteArray) {
-        _connectionState.value = "מבצע אימות (RSA)..."
-        
         if (keyPair == null) {
             keyPair = withContext(Dispatchers.Default) { AdbCrypto.generateKeyPair() }
         }
 
-        // חותמים על הטוקן
         val signedToken = AdbCrypto.signToken(token, keyPair!!)
         
         if (!isAuthenticating) {
-            // שלב 1: שליחת החתימה בלבד
+            _connectionState.value = "שולח חתימת RSA (Signature)..."
             isAuthenticating = true
             val authSignature = AdbMessage(AdbProtocol.A_AUTH, 2, 0, signedToken)
             adbConnection?.sendRaw(authSignature)
         } else {
-            // שלב 2: אם המכשיר ביקש שוב (כי הוא לא מכיר אותנו), שולחים את המפתח הציבורי
+            _connectionState.value = "שולח מפתח ציבורי (Public Key)... אנא אשר במכשיר השני."
             val publicKey = AdbCrypto.encodePublicKey(keyPair!!.public as RSAPublicKey)
-            // המפתח הציבורי חייב להסתיים בתו Null
             val publicKeyBytes = publicKey.toByteArray(Charsets.UTF_8) + byteArrayOf(0)
             val authPublicKey = AdbMessage(AdbProtocol.A_AUTH, 3, 0, publicKeyBytes)
             adbConnection?.sendRaw(authPublicKey)
