@@ -12,36 +12,33 @@ import kotlinx.coroutines.flow.StateFlow
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     
     private val usbManager = application.getSystemService(Application.USB_SERVICE) as UsbManager
-    
-    // המוח של האפליקציה
     private val processManager = RootProcessManager(usbManager)
 
-    // חשיפת המצב והלוגים ל-UI (המסך יקשיב לזה ויתעדכן אוטומטית)
     val state: StateFlow<RootState> = processManager.state
     val logs: StateFlow<List<String>> = processManager.logs
 
-    // חיבור ראשוני למכשיר (ADB)
     fun connectAdb(device: UsbDevice) {
         processManager.connectAdb(device, viewModelScope)
     }
 
-    // מעבר ממצב ADB למצב Fastboot
     fun rebootToFastboot() {
         processManager.rebootToFastboot()
     }
 
-    // חיבור מחדש למכשיר לאחר שהוא עלה במצב Fastboot
     fun connectFastboot(device: UsbDevice) {
         processManager.connectFastboot(device)
     }
 
-    // ביצוע הצריבה
     fun flashPartition(partitionName: String, data: ByteArray) {
         processManager.flashPartition(partitionName, data)
     }
 
-    // איפוס כל התהליך למצב התחלתי
     fun reset() {
         processManager.reset()
+    }
+
+    // הוספנו פונקציה כדי שנוכל לרשום לוגים גם מה-UI (לצורך דיבוג)
+    fun addLog(message: String) {
+        processManager.addLog(message)
     }
 }
