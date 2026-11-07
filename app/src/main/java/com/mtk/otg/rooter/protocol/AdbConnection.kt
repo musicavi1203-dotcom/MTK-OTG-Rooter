@@ -20,20 +20,25 @@ class AdbConnection(
     private val _incomingMessages = MutableSharedFlow<AdbMessage>()
     val incomingMessages: SharedFlow<AdbMessage> = _incomingMessages.asSharedFlow()
 
+    // הוספנו ערוץ לוגים פנימי כדי שנוכל לראות שגיאות USB
+    private val _logMessages = MutableSharedFlow<String>()
+    val logMessages: SharedFlow<String> = _logMessages.asSharedFlow()
+
     companion object {
         private const val A_VERSION = 0x01000000
-        private const val MAX_PAYLOAD = 4096
+        private const val MAX_PAYLOAD = 256 * 1024 // 256KB - יותר סטנדרטי
         private const val TIMEOUT_MS = 3000
     }
 
     fun connect(scope: CoroutineScope) {
         if (isConnected) return
 
+        // תיקון: מחרוזת פשוטה יותר ש-MTK אוהב
         val cnxnMessage = AdbMessage(
             command = AdbProtocol.A_CNXN,
             arg0 = A_VERSION,
             arg1 = MAX_PAYLOAD,
-            data = "host::features=cmd,shell_v2\u0000".toByteArray()
+            data = "host::\u0000".toByteArray()
         )
 
         sendRaw(cnxnMessage)
@@ -45,25 +50,31 @@ class AdbConnection(
     }
 
     fun sendRaw(message: AdbMessage) {
-        val bytes = message.toByteArray()
-        val result = connection.bulkTransfer(endpointOut, bytes, bytes.size, TIMEOUT_MS)
-        if (result < 0) {
-            println("USB Send Error: $result")
+        try {
+            val bytes = message.toByteArray()
+            val result = connection.bulkTransfer(endpointOut, bytes, bytes.size, TIMEOUT_MS)
+            if (result < 0) {
+                _logMessages.tryEmit("שגיאת שליחה ב-USB: $result")
+            }
+        } catch (e: Exception) {
+            _logMessages.tryEmit("חריגה בשליחת USB: ${e.message}")
         }
     }
 
     private suspend fun readLoop() {
         val buffer = ByteArray(16384)
-        
-        while (isConnected) {
-            val bytesRead = connection.bulkTransfer(endpointIn, buffer, buffer.size, TIMEOUT_MS)
-            
-            if (bytesRead > 0) {
-                val receivedBytes = buffer.copyOf(bytesRead)
-                processIncomingData(receivedBytes)
-            } else if (bytesRead < 0) {
-                delay(100) 
+        try {
+            while (isConnected) {
+                val bytesRead = connection.bulkTransfer(endpointIn, buffer, buffer.size, TIMEOUT_MS)
+                if (bytesRead > 0) {
+                    val receivedBytes = buffer.copyOf(bytesRead)
+                    processIncomingData(receivedBytes)
+                } else if (bytesRead < 0) {
+                    delay(100) 
+                }
             }
+        } catch (e: Exception) {
+            _logMessages.tryEmit("חריגה בקריאת USB: ${e.message}")
         }
     }
 
@@ -72,16 +83,20 @@ class AdbConnection(
         while (offset < bytes.size) {
             if (bytes.size - offset < AdbProtocol.HEADER_SIZE) break
             
-            // התיקון: קוראים את הכותרת כדי לדעת את הגודל האמיתי של המידע (Data Length)
             val buffer = ByteBuffer.wrap(bytes, offset, AdbProtocol.HEADER_SIZE)
             buffer.order(ByteOrder.LITTLE_ENDIAN)
-            buffer.position(12) // מדלגים על command, arg0, arg1
+            buffer.position(12)
             val dataLength = buffer.int
+            
+            // הגנה מפני מידע שגוי שיכול לקרוס את האפליקציה
+            if (dataLength < 0 || dataLength > 16384) {
+                _logMessages.tryEmit("אורך נתונים לא תקין: $dataLength")
+                break
+            }
             
             val totalPacketLength = AdbProtocol.HEADER_SIZE + dataLength
             if (bytes.size - offset < totalPacketLength) break
 
-            // מחלצים את החבילה המלאה (כותרת + מידע)
             val fullPacketBytes = bytes.copyOfRange(offset, offset + totalPacketLength)
             val fullMessage = AdbMessage.fromByteArray(fullPacketBytes)
 
@@ -96,11 +111,9 @@ class AdbConnection(
     private fun handleMessage(message: AdbMessage) {
         when (message.command) {
             AdbProtocol.A_CNXN -> {
-                println("ADB: Connected successfully!")
                 _incomingMessages.tryEmit(message)
             }
             AdbProtocol.A_AUTH -> {
-                println("ADB: Auth requested (Token received)")
                 _incomingMessages.tryEmit(message)
             }
             AdbProtocol.A_OKAY -> {
@@ -110,7 +123,6 @@ class AdbConnection(
                 _incomingMessages.tryEmit(message)
             }
             AdbProtocol.A_CLSE -> {
-                println("ADB: Channel closed")
                 _incomingMessages.tryEmit(message)
             }
         }
