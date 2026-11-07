@@ -1,6 +1,5 @@
 package com.mtk.otg.rooter
 
-import android.hardware.usb.UsbDevice
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -19,6 +18,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.mtk.otg.rooter.manager.RootState
 import com.mtk.otg.rooter.ui.theme.MTKOTGRooterTheme
+import com.mtk.otg.rooter.usb.DeviceMode
 import com.mtk.otg.rooter.usb.UsbConnectionManager
 import com.mtk.otg.rooter.usb.UsbEvent
 import com.mtk.otg.rooter.viewmodel.MainViewModel
@@ -59,7 +59,6 @@ fun RooterScreen(usbManager: UsbConnectionManager, viewModel: MainViewModel) {
     
     var connectedDevices by remember { mutableStateOf(usbManager.getConnectedDevices()) }
 
-    // האזנה לאירועי USB (חיבור, ניתוק, הרשאה) ורישום שלהם ללוג
     LaunchedEffect(Unit) {
         usbManager.usbEvents.collect { event ->
             when (event) {
@@ -73,10 +72,13 @@ fun RooterScreen(usbManager: UsbConnectionManager, viewModel: MainViewModel) {
                 }
                 is UsbEvent.PermissionGranted -> {
                     viewModel.addLog("התקבל אירוע: הרשאת USB אושרה!")
-                    if (currentState == RootState.IDLE) {
-                        viewModel.connectAdb(event.device)
-                    } else if (currentState == RootState.WAITING_FOR_FASTBOOT) {
-                        viewModel.connectFastboot(event.device)
+                    
+                    // מנתבים את הפעולה לפי סוג המכשיר שזוהה
+                    when (usbManager.getDeviceMode(event.device)) {
+                        DeviceMode.ADB -> viewModel.connectAdb(event.device)
+                        DeviceMode.FASTBOOT -> viewModel.connectFastboot(event.device)
+                        DeviceMode.BROM -> viewModel.loadBromDa(event.device)
+                        DeviceMode.UNKNOWN -> viewModel.addLog("שגיאה: מכשיר לא מזוהה.")
                     }
                 }
                 UsbEvent.PermissionDenied -> {
@@ -104,34 +106,41 @@ fun RooterScreen(usbManager: UsbConnectionManager, viewModel: MainViewModel) {
                 fontSize = 18.sp,
                 color = when (currentState) {
                     RootState.ERROR -> MaterialTheme.colorScheme.error
-                    RootState.ADB_READY, RootState.SUCCESS -> MaterialTheme.colorScheme.primary
+                    RootState.ADB_READY, RootState.FASTBOOT_CONNECTED, RootState.BROM_READY, RootState.SUCCESS -> MaterialTheme.colorScheme.primary
                     else -> MaterialTheme.colorScheme.onBackground
                 },
                 modifier = Modifier.padding(bottom = 16.dp)
             )
 
-            // אזור הכפתורים לפי המצב
             when (currentState) {
                 RootState.IDLE -> {
                     if (connectedDevices.isEmpty()) {
                         Text("חבר את מכשיר ה-MTK באמצעות כבל OTG.")
                     } else {
                         connectedDevices.forEach { device ->
+                            val mode = usbManager.getDeviceMode(device)
+                            val buttonText = when (mode) {
+                                DeviceMode.ADB -> "בקש הרשאה והתחבר ל-ADB (${device.deviceName})"
+                                DeviceMode.FASTBOOT -> "בקש הרשאה והתחבר ל-Fastboot"
+                                DeviceMode.BROM -> "בקש הרשאה וטען DA (מצב BROM)"
+                                DeviceMode.UNKNOWN -> "מכשיר לא מזוהה - בקש הרשאה בכל זאת"
+                            }
+                            
                             Button(
                                 onClick = { 
-                                    viewModel.addLog("מבקש הרשאת USB...")
+                                    viewModel.addLog("מבקש הרשאת USB עבור $mode...")
                                     usbManager.requestPermission(device) 
                                 },
                                 modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
                             ) {
-                                Text("בקש הרשאה והתחבר ל-${device.deviceName}")
+                                Text(buttonText)
                             }
                         }
                     }
                 }
-                RootState.ADB_CONNECTING -> {
+                RootState.ADB_CONNECTING, RootState.BROM_LOADING -> {
                     CircularProgressIndicator(modifier = Modifier.padding(16.dp))
-                    Text("מנסה להתחבר ל-ADB... ודא שניפוי באגים מופעל במכשיר השני ואושר.")
+                    Text(if (currentState == RootState.ADB_CONNECTING) "מנסה להתחבר ל-ADB..." else "טוען את קובץ ה-DA (BROM)...")
                 }
                 RootState.ADB_READY -> {
                     Button(
@@ -163,6 +172,16 @@ fun RooterScreen(usbManager: UsbConnectionManager, viewModel: MainViewModel) {
                         Text("צרוב boot.img (דמו)")
                     }
                 }
+                RootState.BROM_READY -> {
+                    Text("ה-DA נטען בהצלחה! המכשיר מוכן לשאיבת מחיצות.")
+                    // כאן בהמשך נוסיף כפתור לשאיבת המחיצות
+                    Button(
+                        onClick = { viewModel.addLog("פונקציית שאיבת מחיצות תתווסף בקרוב...") },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("שאוב מחיצת boot (בקרוב)")
+                    }
+                }
                 RootState.ERROR -> {
                     Text("אירעה שגיאה. אנא אפס ונסה שוב.", color = MaterialTheme.colorScheme.error)
                 }
@@ -173,7 +192,6 @@ fun RooterScreen(usbManager: UsbConnectionManager, viewModel: MainViewModel) {
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // חלון הלוגים
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
